@@ -1,0 +1,49 @@
+// The Quest APK. The native code is NOT built by Gradle: scripts/build-quest.ps1 configures this repository's
+// CMake tree for the NDK, builds librrgame.so and gathers it with the Khronos OpenXR loader in <build>/jniLibs -
+// Gradle only packages and signs. The debug keystore is generated
+// locally under work/android (never included in source exports). Release APKs keep the same signer for in-place updates.
+plugins { id 'com.android.application' }
+
+def repo = rootProject.projectDir.parentFile
+def keystore = new File(repo, 'work/android/debug.keystore')
+
+android {
+    namespace 'com.rrjb.vr'
+    compileSdk 35
+    ndkVersion '27.2.12479018'
+    defaultConfig {
+        applicationId 'com.rrjb.vr'
+        minSdk 32
+        targetSdk 32
+        versionCode 11
+        versionName '0.1.0'
+        ndk { abiFilters 'arm64-v8a' }
+    }
+    signingConfigs {
+        debug {
+            storeFile keystore
+            storePassword 'android'
+            keyAlias 'androiddebugkey'
+            keyPassword 'android'
+        }
+    }
+    buildTypes {
+        debug {
+            signingConfig signingConfigs.debug
+            debuggable true
+        }
+        release {
+            signingConfig signingConfigs.debug
+            debuggable false
+            minifyEnabled false
+        }
+    }
+    sourceSets {
+        // scripts/build-quest.ps1 passes -PrrjbJniDir=<its -BuildDir>/jniLibs, so the APK always packages the library
+        // that run just built rather than a stale one from another build directory.
+        main { jniLibs.srcDirs = [project.hasProperty('rrjbJniDir') ? new File(project.property('rrjbJniDir').toString())
+                                                                 : new File(repo, 'build_quest/jniLibs')] }
+    }
+    // Quest sideload target; Google Play publication rules do not apply.
+    lint { disable 'ExpiredTargetSdkVersion' }
+}

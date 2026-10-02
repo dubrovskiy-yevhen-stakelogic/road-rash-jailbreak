@@ -1,0 +1,254 @@
+#include "render/text_overlay.h"
+
+#include "render/shaders.h"
+
+#include <cstdint>
+#include <cstdlib>
+#include <cstring>
+
+namespace rr::render {
+
+namespace {
+
+const char* const kTextVs = R"(#version 330 core
+layout(location = 0) in vec2 aPos;   // pixels, top-left origin
+layout(location = 1) in vec2 aUv;    // atlas 0..1; u < 0: a flat panel
+layout(location = 2) in vec4 aColour;
+uniform vec2 uScreen;
+out vec2 vUv;
+out vec4 vColour;
+void main() {
+    vUv = aUv;
+    vColour = aColour;
+    gl_Position = vec4(aPos.x / uScreen.x * 2.0 - 1.0, 1.0 - aPos.y / uScreen.y * 2.0, 0.0, 1.0);
+}
+)";
+const char* const kTextFs = R"(#version 330 core
+in vec2 vUv;
+in vec4 vColour;
+uniform sampler2D uAtlas;
+out vec4 oColor;
+void main() {
+    float a = vUv.x < 0.0 ? 1.0 : texture(uAtlas, vUv).r;
+    oColor = vec4(vColour.rgb, vColour.a * a);
+}
+)";
+
+constexpr int kAtlasW = 256, kAtlasH = 144, kCellW = 16, kCellH = 24;
+
+// The built-in font (OURS, drawn for this file): ASCII 32..126 as 5 x 7 bitmaps, one byte per row, bit 4 the left
+// column. It is what the overlay writes with where there is no GDI (the Quest) - or on Windows with
+// RRJB_BUILTIN_FONT=1, so the Quest's text can be looked at on the desktop.
+const uint8_t kFont5x7[95][7] = {
+    {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}, {0x04, 0x04, 0x04, 0x04, 0x04, 0x00, 0x04}, // space !
+    {0x0A, 0x0A, 0x0A, 0x00, 0x00, 0x00, 0x00}, {0x0A, 0x0A, 0x1F, 0x0A, 0x1F, 0x0A, 0x0A}, // " #
+    {0x04, 0x0F, 0x14, 0x0E, 0x05, 0x1E, 0x04}, {0x18, 0x19, 0x02, 0x04, 0x08, 0x13, 0x03}, // $ %
+    {0x0C, 0x12, 0x14, 0x08, 0x15, 0x12, 0x0D}, {0x0C, 0x04, 0x08, 0x00, 0x00, 0x00, 0x00}, // & '
+    {0x02, 0x04, 0x08, 0x08, 0x08, 0x04, 0x02}, {0x08, 0x04, 0x02, 0x02, 0x02, 0x04, 0x08}, // ( )
+    {0x00, 0x04, 0x15, 0x0E, 0x15, 0x04, 0x00}, {0x00, 0x04, 0x04, 0x1F, 0x04, 0x04, 0x00}, // * +
+    {0x00, 0x00, 0x00, 0x00, 0x0C, 0x04, 0x08}, {0x00, 0x00, 0x00, 0x1F, 0x00, 0x00, 0x00}, // , -
+    {0x00, 0x00, 0x00, 0x00, 0x00, 0x0C, 0x0C}, {0x00, 0x01, 0x02, 0x04, 0x08, 0x10, 0x00}, // . /
+    {0x0E, 0x11, 0x13, 0x15, 0x19, 0x11, 0x0E}, {0x04, 0x0C, 0x04, 0x04, 0x04, 0x04, 0x0E}, // 0 1
+    {0x0E, 0x11, 0x01, 0x02, 0x04, 0x08, 0x1F}, {0x1F, 0x02, 0x04, 0x02, 0x01, 0x11, 0x0E}, // 2 3
+    {0x02, 0x06, 0x0A, 0x12, 0x1F, 0x02, 0x02}, {0x1F, 0x10, 0x1E, 0x01, 0x01, 0x11, 0x0E}, // 4 5
+    {0x06, 0x08, 0x10, 0x1E, 0x11, 0x11, 0x0E}, {0x1F, 0x01, 0x02, 0x04, 0x08, 0x08, 0x08}, // 6 7
+    {0x0E, 0x11, 0x11, 0x0E, 0x11, 0x11, 0x0E}, {0x0E, 0x11, 0x11, 0x0F, 0x01, 0x02, 0x0C}, // 8 9
+    {0x00, 0x0C, 0x0C, 0x00, 0x0C, 0x0C, 0x00}, {0x00, 0x0C, 0x0C, 0x00, 0x0C, 0x04, 0x08}, // : ;
+    {0x02, 0x04, 0x08, 0x10, 0x08, 0x04, 0x02}, {0x00, 0x00, 0x1F, 0x00, 0x1F, 0x00, 0x00}, // < =
+    {0x08, 0x04, 0x02, 0x01, 0x02, 0x04, 0x08}, {0x0E, 0x11, 0x01, 0x02, 0x04, 0x00, 0x04}, // > ?
+    {0x0E, 0x11, 0x01, 0x0D, 0x15, 0x15, 0x0E}, {0x0E, 0x11, 0x11, 0x11, 0x1F, 0x11, 0x11}, // @ A
+    {0x1E, 0x11, 0x11, 0x1E, 0x11, 0x11, 0x1E}, {0x0E, 0x11, 0x10, 0x10, 0x10, 0x11, 0x0E}, // B C
+    {0x1C, 0x12, 0x11, 0x11, 0x11, 0x12, 0x1C}, {0x1F, 0x10, 0x10, 0x1E, 0x10, 0x10, 0x1F}, // D E
+    {0x1F, 0x10, 0x10, 0x1E, 0x10, 0x10, 0x10}, {0x0E, 0x11, 0x10, 0x17, 0x11, 0x11, 0x0F}, // F G
+    {0x11, 0x11, 0x11, 0x1F, 0x11, 0x11, 0x11}, {0x0E, 0x04, 0x04, 0x04, 0x04, 0x04, 0x0E}, // H I
+    {0x07, 0x02, 0x02, 0x02, 0x02, 0x12, 0x0C}, {0x11, 0x12, 0x14, 0x18, 0x14, 0x12, 0x11}, // J K
+    {0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x1F}, {0x11, 0x1B, 0x15, 0x15, 0x11, 0x11, 0x11}, // L M
+    {0x11, 0x11, 0x19, 0x15, 0x13, 0x11, 0x11}, {0x0E, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0E}, // N O
+    {0x1E, 0x11, 0x11, 0x1E, 0x10, 0x10, 0x10}, {0x0E, 0x11, 0x11, 0x11, 0x15, 0x12, 0x0D}, // P Q
+    {0x1E, 0x11, 0x11, 0x1E, 0x14, 0x12, 0x11}, {0x0F, 0x10, 0x10, 0x0E, 0x01, 0x01, 0x1E}, // R S
+    {0x1F, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04}, {0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0E}, // T U
+    {0x11, 0x11, 0x11, 0x11, 0x11, 0x0A, 0x04}, {0x11, 0x11, 0x11, 0x15, 0x15, 0x15, 0x0A}, // V W
+    {0x11, 0x11, 0x0A, 0x04, 0x0A, 0x11, 0x11}, {0x11, 0x11, 0x11, 0x0A, 0x04, 0x04, 0x04}, // X Y
+    {0x1F, 0x01, 0x02, 0x04, 0x08, 0x10, 0x1F}, {0x0E, 0x08, 0x08, 0x08, 0x08, 0x08, 0x0E}, // Z [
+    {0x00, 0x10, 0x08, 0x04, 0x02, 0x01, 0x00}, {0x0E, 0x02, 0x02, 0x02, 0x02, 0x02, 0x0E}, // backslash ]
+    {0x04, 0x0A, 0x11, 0x00, 0x00, 0x00, 0x00}, {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x1F}, // ^ _
+    {0x08, 0x04, 0x02, 0x00, 0x00, 0x00, 0x00}, {0x00, 0x00, 0x0E, 0x01, 0x0F, 0x11, 0x0F}, // ` a
+    {0x10, 0x10, 0x16, 0x19, 0x11, 0x11, 0x1E}, {0x00, 0x00, 0x0E, 0x10, 0x10, 0x11, 0x0E}, // b c
+    {0x01, 0x01, 0x0D, 0x13, 0x11, 0x11, 0x0F}, {0x00, 0x00, 0x0E, 0x11, 0x1F, 0x10, 0x0E}, // d e
+    {0x06, 0x09, 0x08, 0x1C, 0x08, 0x08, 0x08}, {0x00, 0x0F, 0x11, 0x11, 0x0F, 0x01, 0x0E}, // f g
+    {0x10, 0x10, 0x16, 0x19, 0x11, 0x11, 0x11}, {0x04, 0x00, 0x0C, 0x04, 0x04, 0x04, 0x0E}, // h i
+    {0x02, 0x00, 0x06, 0x02, 0x02, 0x12, 0x0C}, {0x10, 0x10, 0x12, 0x14, 0x18, 0x14, 0x12}, // j k
+    {0x0C, 0x04, 0x04, 0x04, 0x04, 0x04, 0x0E}, {0x00, 0x00, 0x1A, 0x15, 0x15, 0x11, 0x11}, // l m
+    {0x00, 0x00, 0x16, 0x19, 0x11, 0x11, 0x11}, {0x00, 0x00, 0x0E, 0x11, 0x11, 0x11, 0x0E}, // n o
+    {0x00, 0x00, 0x1E, 0x11, 0x1E, 0x10, 0x10}, {0x00, 0x00, 0x0D, 0x13, 0x0F, 0x01, 0x01}, // p q
+    {0x00, 0x00, 0x16, 0x19, 0x10, 0x10, 0x10}, {0x00, 0x00, 0x0E, 0x10, 0x0E, 0x01, 0x1E}, // r s
+    {0x08, 0x08, 0x1C, 0x08, 0x08, 0x09, 0x06}, {0x00, 0x00, 0x11, 0x11, 0x11, 0x13, 0x0D}, // t u
+    {0x00, 0x00, 0x11, 0x11, 0x11, 0x0A, 0x04}, {0x00, 0x00, 0x11, 0x11, 0x15, 0x15, 0x0A}, // v w
+    {0x00, 0x00, 0x11, 0x0A, 0x04, 0x0A, 0x11}, {0x00, 0x00, 0x11, 0x11, 0x0F, 0x01, 0x0E}, // x y
+    {0x00, 0x00, 0x1F, 0x02, 0x04, 0x08, 0x1F}, {0x02, 0x04, 0x04, 0x08, 0x04, 0x04, 0x02}, // z {
+    {0x04, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04}, {0x08, 0x04, 0x04, 0x02, 0x04, 0x04, 0x08}, // | }
+    {0x00, 0x00, 0x08, 0x15, 0x02, 0x00, 0x00},                                             // ~
+};
+
+// The built-in font into the atlas: each font pixel 2 x 2 atlas pixels, the 10 x 14 glyph at (3, 5) of its cell,
+// a fixed advance of 12 (Consolas' is 11 at the GDI size) - so the layout code's widths stay about the same.
+void BuiltinAtlas(std::vector<uint8_t>& alpha, float advance[96]) {
+    alpha.assign(static_cast<size_t>(kAtlasW) * kAtlasH, 0);
+    for (int c = 32; c < 128; ++c) {
+        advance[c - 32] = 12.0f;
+        if (c == 127) continue;
+        const int cx = ((c - 32) % 16) * kCellW + 3, cy = ((c - 32) / 16) * kCellH + 5;
+        for (int row = 0; row < 7; ++row)
+            for (int col = 0; col < 5; ++col) {
+                if ((kFont5x7[c - 32][row] & (0x10 >> col)) == 0) continue;
+                for (int dy = 0; dy < 2; ++dy)
+                    for (int dx = 0; dx < 2; ++dx)
+                        alpha[static_cast<size_t>(cy + 2 * row + dy) * kAtlasW + static_cast<size_t>(cx + 2 * col + dx)] = 255;
+            }
+    }
+}
+
+} // namespace
+
+bool TextOverlay::Init() {
+    if (program_ != 0) return true;
+    std::vector<uint8_t> alpha;
+#ifdef _WIN32
+    const char* builtinEnv = std::getenv("RRJB_BUILTIN_FONT");
+    const bool builtin = builtinEnv != nullptr && std::strcmp(builtinEnv, "1") == 0;
+#else
+    const bool builtin = true; // no GDI: the built-in font
+#endif
+    if (builtin) {
+        BuiltinAtlas(alpha, advance_);
+    } else {
+#ifdef _WIN32
+    // The atlas: ASCII 32..127 in a 16 x 6 grid of 16 x 24 cells, rendered by GDI from Consolas.
+    HDC dc = CreateCompatibleDC(nullptr);
+    BITMAPINFO info = {};
+    info.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    info.bmiHeader.biWidth = kAtlasW;
+    info.bmiHeader.biHeight = -kAtlasH;
+    info.bmiHeader.biPlanes = 1;
+    info.bmiHeader.biBitCount = 32;
+    void* pixels = nullptr;
+    HBITMAP bitmap = dc ? CreateDIBSection(dc, &info, DIB_RGB_COLORS, &pixels, nullptr, 0) : nullptr;
+    HFONT font = CreateFontA(-20, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE, ANSI_CHARSET, OUT_DEFAULT_PRECIS,
+                             CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY, FIXED_PITCH, "Consolas");
+    if (!dc || !bitmap || !font || !pixels) {
+        if (font) DeleteObject(font);
+        if (bitmap) DeleteObject(bitmap);
+        if (dc) DeleteDC(dc);
+        return false;
+    }
+    HGDIOBJ oldBitmap = SelectObject(dc, bitmap), oldFont = SelectObject(dc, font);
+    PatBlt(dc, 0, 0, kAtlasW, kAtlasH, BLACKNESS);
+    SetTextColor(dc, RGB(255, 255, 255));
+    SetBkColor(dc, RGB(0, 0, 0));
+    for (int c = 32; c < 128; ++c) {
+        const char ch = static_cast<char>(c);
+        TextOutA(dc, ((c - 32) % 16) * kCellW, ((c - 32) / 16) * kCellH, &ch, 1);
+        SIZE size = {};
+        GetTextExtentPoint32A(dc, &ch, 1, &size);
+        advance_[c - 32] = static_cast<float>(size.cx);
+    }
+    GdiFlush();
+    alpha.assign(static_cast<size_t>(kAtlasW) * kAtlasH, 0);
+    const auto* rgba = static_cast<const uint32_t*>(pixels);
+    for (size_t i = 0; i < alpha.size(); ++i) alpha[i] = static_cast<uint8_t>(rgba[i] & 0xFFu);
+    SelectObject(dc, oldFont);
+    SelectObject(dc, oldBitmap);
+    DeleteObject(font);
+    DeleteObject(bitmap);
+    DeleteDC(dc);
+#endif
+    }
+
+    glGenTextures(1, &atlas_);
+    glBindTexture(GL_TEXTURE_2D, atlas_);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_R8, kAtlasW, kAtlasH, 0, GL_RED, GL_UNSIGNED_BYTE, alpha.data());
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    program_ = BuildProgram(kTextVs, kTextFs);
+    screenLocation_ = gl.GetUniformLocation(program_, "uScreen");
+    atlasLocation_ = gl.GetUniformLocation(program_, "uAtlas");
+    gl.GenVertexArrays(1, &vao_);
+    gl.BindVertexArray(vao_);
+    gl.GenBuffers(1, &vbo_);
+    gl.BindBuffer(GL_ARRAY_BUFFER, vbo_);
+    const GLsizei stride = static_cast<GLsizei>(sizeof(Vertex));
+    gl.VertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, stride, reinterpret_cast<void*>(0));
+    gl.EnableVertexAttribArray(0);
+    gl.VertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, stride, reinterpret_cast<void*>(sizeof(float) * 2));
+    gl.EnableVertexAttribArray(1);
+    gl.VertexAttribPointer(2, 4, GL_FLOAT, GL_FALSE, stride, reinterpret_cast<void*>(sizeof(float) * 4));
+    gl.EnableVertexAttribArray(2);
+    return true;
+}
+
+void TextOverlay::Begin(int width, int height) {
+    width_ = width > 0 ? width : 1;
+    height_ = height > 0 ? height : 1;
+    vertices_.clear();
+}
+
+void TextOverlay::Quad(float x0, float y0, float x1, float y1, float u0, float v0, float u1, float v1, float r, float g,
+                       float b, float a) {
+    const Vertex q[6] = {{x0, y0, u0, v0, r, g, b, a}, {x1, y0, u1, v0, r, g, b, a}, {x0, y1, u0, v1, r, g, b, a},
+                         {x1, y0, u1, v0, r, g, b, a}, {x1, y1, u1, v1, r, g, b, a}, {x0, y1, u0, v1, r, g, b, a}};
+    vertices_.insert(vertices_.end(), q, q + 6);
+}
+
+void TextOverlay::Rect(float x, float y, float w, float h, float r, float g, float b, float a) {
+    Quad(x, y, x + w, y + h, -1.0f, -1.0f, -1.0f, -1.0f, r, g, b, a);
+}
+
+float TextOverlay::TextWidth(const std::string& s, float scale) const {
+    float w = 0.0f;
+    for (char ch : s) {
+        const int c = static_cast<unsigned char>(ch);
+        w += (c >= 32 && c < 128 ? advance_[c - 32] : advance_[0]) * scale;
+    }
+    return w;
+}
+
+void TextOverlay::Text(float x, float y, const std::string& s, float r, float g, float b, float a, float scale) {
+    for (char ch : s) {
+        const int c = static_cast<unsigned char>(ch) < 32 || static_cast<unsigned char>(ch) >= 128 ? '?' : static_cast<unsigned char>(ch);
+        const float adv = advance_[c - 32] * scale;
+        if (c != ' ') {
+            const float u0 = static_cast<float>(((c - 32) % 16) * kCellW) / kAtlasW;
+            const float v0 = static_cast<float>(((c - 32) / 16) * kCellH) / kAtlasH;
+            Quad(x, y, x + kCellW * scale, y + kCellH * scale, u0, v0, u0 + static_cast<float>(kCellW) / kAtlasW,
+                 v0 + static_cast<float>(kCellH) / kAtlasH, r, g, b, a);
+        }
+        x += adv;
+    }
+}
+
+void TextOverlay::End() {
+    if (program_ == 0 || vertices_.empty()) return;
+    glViewport(0, 0, width_, height_);
+    glDisable(GL_DEPTH_TEST);
+    glDisable(GL_SCISSOR_TEST);
+    glDisable(GL_CULL_FACE);
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    gl.UseProgram(program_);
+    gl.Uniform2f(screenLocation_, static_cast<float>(width_), static_cast<float>(height_));
+    gl.ActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, atlas_);
+    gl.Uniform1i(atlasLocation_, 0);
+    gl.BindVertexArray(vao_);
+    gl.BindBuffer(GL_ARRAY_BUFFER, vbo_);
+    gl.BufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(vertices_.size() * sizeof(Vertex)), vertices_.data(), GL_DYNAMIC_DRAW);
+    glDrawArrays(GL_TRIANGLES, 0, static_cast<GLsizei>(vertices_.size()));
+    glDisable(GL_BLEND);
+    glEnable(GL_DEPTH_TEST);
+    vertices_.clear();
+}
+
+} // namespace rr::render

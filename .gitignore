@@ -1,0 +1,10 @@
+work/
+build*/
+*.user
+.vs/
+__pycache__/
+install/
+dist/
+install-location.txt
+android/.gradle/
+android/local.properties
