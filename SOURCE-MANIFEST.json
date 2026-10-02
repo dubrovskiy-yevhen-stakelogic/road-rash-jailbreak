@@ -4,7 +4,7 @@
   "sourceCommit": null,
   "sourceDirty": null,
   "sourceProvenance": "filesystem-sha256",
-  "created": "2026-10-02T20:35:49Z",
+  "created": "2026-10-02T21:39:30Z",
   "files": [
     {
       "path": ".gitignore",
@@ -53,8 +53,8 @@
     },
     {
       "path": "CHANGELOG.md",
-      "bytes": 4409,
-      "sha256": "1e013caad4a9d0716a1925d7977a6240263181263da9ce2a5db40c92c4e2b300"
+      "bytes": 4614,
+      "sha256": "73a45f6b117f549d061f1533ed2041b122cd97577de0786a7f4cc374fedc51e2"
     },
     {
       "path": "cmake/vr-hand-assets.cmake",
@@ -148,8 +148,8 @@
     },
     {
       "path": "docs/QUEST.md",
-      "bytes": 11819,
-      "sha256": "7321146a39365f2a91e43641d3faf7c1b527049ae7be1c2955fc9dce619128a1"
+      "bytes": 12336,
+      "sha256": "dc556030f691368e9bbebf40688ebddb7fcd043cc91a47ecfc155d081ca33f24"
     },
     {
       "path": "docs/SAVE-TRANSFER.md",
@@ -213,18 +213,18 @@
     },
     {
       "path": "scripts/install-player.ps1",
-      "bytes": 3779,
-      "sha256": "e22be675b8747871bc968ba87a5c99d083fb332c80349f59aea498c078868811"
+      "bytes": 4149,
+      "sha256": "a560ef7c1020cc6b8570bbdfaf0dec06d4ca0fe39eed8c12b3c18ddc6f4ccfc2"
     },
     {
       "path": "scripts/install-quest-hd.ps1",
-      "bytes": 5224,
-      "sha256": "9c73fd9649e76425055bc4ff541247780338b9ade7c8c928c6a16e1db792f16b"
+      "bytes": 5348,
+      "sha256": "9596ac4bc460da3f691c32c0c90298ac4ac0ac88a0abb4e7b07580806af9af29"
     },
     {
       "path": "scripts/install-quest-player.ps1",
-      "bytes": 5509,
-      "sha256": "f2ead02f8ad7e6062ddb1f37f87beb3662073c0e4429b4951b3f9988af958028"
+      "bytes": 5652,
+      "sha256": "02b697db3dca5b7244185887d3f2195b56ec4c9bb350829d934474a9af2ff61e"
     },
     {
       "path": "scripts/install-quest.ps1",
@@ -2600,6 +2600,11 @@
       "path": "tests/run_gates.ps1",
       "bytes": 200781,
       "sha256": "dfc3e709f98b941da2f1e26a5fd251c51c78beb7eb74162afaa946980656b45f"
+    },
+    {
+      "path": "tests/test_quest_installer.py",
+      "bytes": 10986,
+      "sha256": "c1a98eb0b73b3c08d98d2b3daf09c7cc78af2d27bf7af6012e1e6335a4f0a562"
     },
     {
       "path": "tests/test_save_provider.py",

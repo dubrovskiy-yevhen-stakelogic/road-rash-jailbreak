@@ -24,21 +24,24 @@ if (!$Pack) {
 if ($Package -notmatch '^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z][A-Za-z0-9_]*)+$') { throw 'Invalid package name.' }
 . (Join-Path $PSScriptRoot 'platform-tools.ps1')
 if (!$Adb) { $Adb = Get-Adb }
-$connected = @(& $Adb devices | Where-Object { $_ -match '^\S+\s+device$' } | ForEach-Object { ($_ -split '\s+')[0] })
-if (!$Serial) {
-    if ($connected.Count -ne 1) { throw 'Connect one Quest over USB and accept USB debugging inside the headset, or specify -Serial.' }
-    $Serial = $connected[0]
-}
-if ($Serial -notmatch '^[A-Za-z0-9._:-]+$' -or $Serial -notin $connected) { throw 'The selected Quest is not connected and authorized.' }
 function Invoke-Adb([string[]]$Arguments) {
     # adb reports push/pull summaries on stderr; under PowerShell 5.1 with 'Stop' (or when the caller merges
     # stderr) those lines become terminating errors, so collect both streams as text and judge by the exit code.
     $previous = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
-    try { $output = @(& $Adb -s $Serial @Arguments 2>&1 | ForEach-Object { "$_" }) } finally { $ErrorActionPreference = $previous }
+    $selector = @()
+    if ($Serial) { $selector = @('-s', $Serial) }
+    try { $output = @(& $Adb @selector @Arguments 2>&1 | ForEach-Object { "$_" }) } finally { $ErrorActionPreference = $previous }
     if ($LASTEXITCODE -ne 0) { throw "ADB failed: $($Arguments -join ' ')`r`n$($output -join "`r`n")" }
     return $output
 }
+if ($Serial -and $Serial -notmatch '^[A-Za-z0-9._:-]+$') { throw 'Invalid ADB serial.' }
+$connected = @(Invoke-Adb @('devices') | Where-Object { $_ -match '^\S+\s+device$' } | ForEach-Object { ($_ -split '\s+')[0] })
+if (!$Serial) {
+    if ($connected.Count -ne 1) { throw 'Connect one Quest over USB and accept USB debugging inside the headset, or specify -Serial.' }
+    $Serial = $connected[0]
+}
+if ($Serial -notin $connected) { throw 'The selected Quest is not connected and authorized.' }
 $external = "/sdcard/Android/data/$Package/files"
 if ($Remove) {
     Invoke-Adb @('shell', "rm -rf $external/hd $external/hd.new $external/hd.new.* $external/rrjb_hd_stage.* /sdcard/rrjb_hd_stage.*") | Out-Null

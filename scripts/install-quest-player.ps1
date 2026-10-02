@@ -37,24 +37,25 @@ if ($manifest.exeSha1 -ne '67ed165a2c517d4e6106fb0dfa324d66dd9a76f1' -or $manife
 
 . (Join-Path $PSScriptRoot 'platform-tools.ps1')
 $Adb = Get-Adb
-$devices = @(& $Adb devices)
-if ($LASTEXITCODE -ne 0) { throw 'Cannot query ADB devices.' }
-$connected = @($devices | Where-Object { $_ -match '^\S+\s+device$' } | ForEach-Object { ($_ -split '\s+')[0] })
-if (!$Serial) {
-    if ($connected.Count -ne 1) { throw 'Connect one Quest over USB and accept USB debugging inside the headset, or specify -Serial.' }
-    $Serial = $connected[0]
-}
-if ($Serial -notmatch '^[A-Za-z0-9._:-]+$') { throw 'Invalid ADB serial.' }
-if ($Serial -notin $connected) { throw 'The selected Quest is not connected and authorized.' }
 function Invoke-Adb([string[]]$Arguments) {
     # adb reports push/pull summaries on stderr; under PowerShell 5.1 with 'Stop' (or when the caller merges
     # stderr) those lines become terminating errors, so collect both streams as text and judge by the exit code.
     $previous = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
-    try { $output = @(& $Adb -s $Serial @Arguments 2>&1 | ForEach-Object { "$_" }) } finally { $ErrorActionPreference = $previous }
+    $selector = @()
+    if ($Serial) { $selector = @('-s', $Serial) }
+    try { $output = @(& $Adb @selector @Arguments 2>&1 | ForEach-Object { "$_" }) } finally { $ErrorActionPreference = $previous }
     if ($LASTEXITCODE -ne 0) { throw "ADB failed: $($Arguments -join ' ')`r`n$($output -join "`r`n")" }
     return $output
 }
+if ($Serial -and $Serial -notmatch '^[A-Za-z0-9._:-]+$') { throw 'Invalid ADB serial.' }
+$devices = @(Invoke-Adb @('devices'))
+$connected = @($devices | Where-Object { $_ -match '^\S+\s+device$' } | ForEach-Object { ($_ -split '\s+')[0] })
+if (!$Serial) {
+    if ($connected.Count -ne 1) { throw 'Connect one Quest over USB and accept USB debugging inside the headset, or specify -Serial.' }
+    $Serial = $connected[0]
+}
+if ($Serial -notin $connected) { throw 'The selected Quest is not connected and authorized.' }
 
 $external = "/sdcard/Android/data/$Package/files"
 $remote = "$external/disc.bin"
@@ -62,7 +63,8 @@ Write-Host "Installing $Apk (update, app data kept)..."
 Invoke-Adb @('install', '-r', $Apk) | Write-Host
 Invoke-Adb @('shell', 'mkdir', '-p', $external) | Out-Null
 $expected = (Get-FileHash -LiteralPath $image.FullName -Algorithm SHA1).Hash.ToLowerInvariant()
-$present = (& $Adb -s $Serial shell sha1sum $remote 2>$null) -join ' '
+# An absent disc is normal on first install. Keep transport and read failures fatal.
+$present = (Invoke-Adb @('shell', "if [ -f '$remote' ]; then sha1sum '$remote'; else echo missing; fi")) -join ' '
 if ($present -match "^$expected\s") { Write-Host 'The disc image on the headset is already identical; not copied again.' }
 else {
     Write-Host "Copying $($image.Name) ($([math]::Round($image.Length / 1MB)) MiB) to the headset as disc.bin..."

@@ -43,7 +43,12 @@ if ($Target -eq 'Quest' -and $apk.Count -ne 1) {
 $adbPath = $null
 if ($Target -eq 'Quest') {
     $adbPath = Get-Adb
-    $connected = @(& $adbPath devices | Where-Object { $_ -match '^\S+\s+device$' } | ForEach-Object { ($_ -split '\s+')[0] })
+    # ADB daemon startup messages use stderr even when device discovery succeeds.
+    $previous = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try { $devices = @(& $adbPath devices 2>&1 | ForEach-Object { "$_" }) } finally { $ErrorActionPreference = $previous }
+    if ($LASTEXITCODE -ne 0) { throw "ADB device discovery failed:`r`n$($devices -join "`r`n")" }
+    $connected = @($devices | Where-Object { $_ -match '^\S+\s+device$' } | ForEach-Object { ($_ -split '\s+')[0] })
     if (!$Serial) {
         if ($connected.Count -ne 1) { throw 'Connect one Quest and accept USB debugging inside the headset.' }
         $Serial = $connected[0]
